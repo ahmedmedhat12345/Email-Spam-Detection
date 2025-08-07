@@ -1,0 +1,107 @@
+
+import nltk
+
+nltk.download(['punkt', 'stopwords', 'averaged_perceptron_tagger', 'wordnet'])
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from nltk import pos_tag
+import pandas as pd
+import string
+import re
+import contractions  # For expanding contractions
+from ekphrasis.classes.preprocessor import TextPreProcessor
+from ekphrasis.utils.helpers import download_statistics
+download_statistics()
+
+# Initialize Ekphrasis for slang normalization only.
+# Pass a callable tokenizer such as str.split instead of a string.
+slang_processor = TextPreProcessor(
+    normalize=[],  # No extra normalization for entities
+    annotate=set(),  # No annotations
+    unpack_contractions=False,  # Already handling contractions separately
+    tokenizer=str.split  # Use a simple word-based tokenizer
+)
+
+
+def normalize_slang(text):
+    # Process text with Ekphrasis to handle slang normalization.
+    return " ".join(slang_processor.pre_process_doc(text))
+
+
+# Load dataset
+df = pd.read_csv('data_spam.csv', encoding='latin-1')
+df = df[['v1', 'v2']].rename(columns={'v1': 'label', 'v2': 'text'})
+
+
+def preprocess_text(text):
+    if not isinstance(text, str):
+        return ""
+
+    # 1. Remove URLs
+    text = re.sub(r'https?://\S+|www\.\S+', '', text, flags=re.IGNORECASE)
+
+    # 2. Expand contractions
+    text = contractions.fix(text)
+
+    # 3. Replace slang/abbreviations using Ekphrasis for slang normalization
+    text = normalize_slang(text)
+
+    # 4. Handle special characters that cause concatenation (e.g., replace '/' and '.' with spaces)
+    text = re.sub(r'([/\.])', r' ', text)
+
+    # 5. Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # 6. Remove punctuation
+    text = text.translate(str.maketrans('', '', string.punctuation))
+
+    # 7. Remove noise: numbers and special characters (keep letters and whitespace)
+    text = re.sub(r'\d+', '', text)
+    text = re.sub(r'[^A-Za-z\s]', '', text)
+
+    # 8. Tokenization
+    tokens = word_tokenize(text)
+
+    # 9. Fix repeated characters (e.g., "soooo" -> "sooo")
+    tokens = [re.sub(r'(.)\1{2,}', r'\1\1', word) for word in tokens]
+
+    # 10. POS tagging
+    tagged = pos_tag(tokens)
+
+    # 11. Case folding (preserve proper nouns initially)
+    processed, pos_tags = [], []
+    for word, tag in tagged:
+        if tag in ['NNP', 'NNPS']:
+            processed.append(word)
+        else:
+            processed.append(word.lower())
+        pos_tags.append(tag)
+
+    # 12. Stop word removal (keep proper nouns)
+    stop_words = set(stopwords.words('english'))
+    filtered, filtered_pos = [], []
+    for word, tag in zip(processed, pos_tags):
+        if tag in ['NNP', 'NNPS'] or word not in stop_words:
+            filtered.append(word)
+            filtered_pos.append(tag)
+
+    # 13. Lemmatization using POS mapping
+    lemmatizer = WordNetLemmatizer()
+    pos_map = {'NN': 'n', 'NNS': 'n', 'VB': 'v', 'VBD': 'v', 'VBG': 'v', 'VBN': 'v',
+               'VBP': 'v', 'VBZ': 'v', 'JJ': 'a', 'JJR': 'a', 'JJS': 'a', 'RB': 'r'}
+    lemmas = []
+    for word, tag in zip(filtered, filtered_pos):
+        pos = pos_map.get(tag[:2], 'n')
+        lemmas.append(lemmatizer.lemmatize(word, pos=pos))
+
+    # 14. Final lowercase conversion
+    return ' '.join(word.lower() for word in lemmas)
+
+
+# Apply preprocessing
+df['processed'] = df['text'].apply(preprocess_text)
+
+# Save and display results
+df.to_csv('processed_data_spam.csv', index=False, encoding='latin-1')
+print(df[['text', 'processed']].head())
